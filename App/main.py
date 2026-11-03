@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from App.Routers.main_categories import router as main_categories_router
@@ -18,6 +17,8 @@ from App.Routers.schedule import router as schedule_router
 from App.Routers.cart import router as cart_router
 from App.Routers.coupons import router as coupons_router
 from App.Routers.bookings import router as bookings_router
+from App.Routers.payments import router as payments_router
+from App.Routers.auth import router as auth_router
 
 app = FastAPI(
     title="Neatify Customer Backend",
@@ -66,3 +67,5 @@ app.include_router(schedule_router)
 app.include_router(cart_router)
 app.include_router(coupons_router)
 app.include_router(bookings_router)
+app.include_router(payments_router)
+app.include_router(auth_router)

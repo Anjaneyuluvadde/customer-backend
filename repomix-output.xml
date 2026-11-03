@@ -1,0 +1,2525 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+App/
+  Dependencies/
+    __init__.py
+    customer_auth.py
+  Routers/
+    __init__.py
+    addons.py
+    addresses.py
+    app_popups.py
+    bookings.py
+    cart.py
+    coupons.py
+    customer_auth_test.py
+    hero_banners.py
+    hubs.py
+    main_categories.py
+    my_bookings.py
+    offers.py
+    policies.py
+    profile.py
+    promotional_banners.py
+    schedule.py
+    services.py
+  __init__.py
+  main.py
+Supabase/
+  __init__.py
+  client.py
+  database.py
+.env.example
+.gitignore
+Dockerfile
+Procfile
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="App/Dependencies/__init__.py">
+
+</file>
+
+<file path="App/Dependencies/customer_auth.py">
+from dataclasses import dataclass
+from uuid import UUID
+
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+@dataclass(frozen=True)
+class AuthenticatedCustomer:
+    user_id: str
+    phone: str | None = None
+    email: str | None = None
+
+
+def resolve_customer_target_id(client, customer: AuthenticatedCustomer) -> str:
+    """
+    Resolve customer target ID.
+    If the customer's phone number matches an existing legacy profile,
+    return that profile's ID so that past bookings/data remain accessible.
+    Otherwise, return customer.user_id.
+    """
+    if customer.phone:
+        clean_phone = "".join(filter(str.isdigit, str(customer.phone)))[-10:]
+        if clean_phone:
+            try:
+                resp = (
+                    client.table("profile")
+                    .select("id")
+                    .ilike("phone", f"%{clean_phone}%")
+                    .order("created_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if resp.data and len(resp.data) > 0 and resp.data[0].get("id"):
+                    return str(resp.data[0]["id"])
+            except Exception:
+                pass
+    return customer.user_id
+
+
+async def get_current_customer(
+    credentials: HTTPAuthorizationCredentials | None = Depends(
+        bearer_scheme
+    ),
+) -> AuthenticatedCustomer:
+    """
+    Validate a Supabase Auth access token.
+
+    Never trust customer IDs supplied in query parameters
+    or request bodies.
+    """
+
+    if (
+        credentials is None
+        or credentials.scheme.lower() != "bearer"
+        or not credentials.credentials
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = credentials.credentials
+
+    def verify_customer_token():
+        client = get_supabase_client()
+        return client.auth.get_user(access_token)
+
+    try:
+        response = await run_in_threadpool(
+            verify_customer_token
+        )
+
+        user = response.user
+
+        if not user or not user.id:
+            raise ValueError("Invalid authenticated user")
+
+        validated_id = str(UUID(str(user.id)))
+
+        phone = getattr(user, "phone", None)
+        if not phone and hasattr(user, "user_metadata") and isinstance(user.user_metadata, dict):
+            phone = user.user_metadata.get("phone_number") or user.user_metadata.get("phone")
+
+        email = getattr(user, "email", None)
+
+        return AuthenticatedCustomer(
+            user_id=validated_id,
+            phone=str(phone) if phone else None,
+            email=str(email) if email else None,
+        )
+
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired access token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+</file>
+
+<file path="App/Routers/__init__.py">
+
+</file>
+
+<file path="App/Routers/addons.py">
+from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/addons",
+    tags=["Customer Add-ons"],
+)
+
+
+@router.get("")
+async def get_addons():
+    try:
+        def fetch_addons():
+            client = get_supabase_client()
+
+            return (
+                client.table("add_ons")
+                .select("*")
+                .eq("is_active", True)
+                .order("sort_order", desc=False)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_addons)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch add-ons at this time.",
+        )
+</file>
+
+<file path="App/Routers/addresses.py">
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/addresses",
+    tags=["Customer Addresses"],
+)
+
+
+class AddressSaveRequest(BaseModel):
+    tag: str = "Home"
+    house_no: str | None = None
+    landmark: str | None = None
+    full_address: str
+    pincode: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+@router.get("")
+async def get_customer_addresses(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_addresses():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            response = (
+                client.table("user_addresses")
+                .select("*")
+                .in_("user_id", [customer.user_id, target_id])
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return response.data or []
+
+        addresses = await run_in_threadpool(fetch_addresses)
+        return {
+            "success": True,
+            "data": addresses,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch addresses: {str(e)}",
+        )
+
+
+@router.post("")
+async def save_customer_address(
+    payload: AddressSaveRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def save_addr():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # If saving a tagged address (e.g., Home, Work), delete any existing address with the same tag first
+            if payload.tag:
+                try:
+                    (
+                        client.table("user_addresses")
+                        .delete()
+                        .eq("user_id", target_id)
+                        .eq("tag", payload.tag)
+                        .execute()
+                    )
+                except Exception:
+                    pass
+
+            insert_data: dict[str, Any] = {
+                "user_id": target_id,
+                "tag": payload.tag or "Home",
+                "full_address": payload.full_address,
+            }
+            if payload.house_no:
+                insert_data["house_no"] = payload.house_no
+            if payload.landmark:
+                insert_data["landmark"] = payload.landmark
+            if payload.pincode:
+                insert_data["pincode"] = payload.pincode
+            if payload.latitude is not None:
+                insert_data["latitude"] = payload.latitude
+            if payload.longitude is not None:
+                insert_data["longitude"] = payload.longitude
+
+            response = client.table("user_addresses").insert(insert_data).execute()
+
+            # If tag is Home, also sync to profile table address & pincode
+            if payload.tag == "Home":
+                try:
+                    profile_update: dict[str, Any] = {"address": payload.full_address}
+                    if payload.pincode:
+                        profile_update["pincode"] = payload.pincode
+                    client.table("profile").update(profile_update).eq("id", target_id).execute()
+                except Exception:
+                    pass
+
+            return response.data[0] if (response and response.data) else insert_data
+
+        saved = await run_in_threadpool(save_addr)
+        return {
+            "success": True,
+            "data": saved,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to save address: {str(e)}",
+        )
+
+
+@router.delete("/{address_id}")
+async def delete_customer_address(
+    address_id: str,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def del_addr():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            resp = (
+                client.table("user_addresses")
+                .delete()
+                .eq("id", address_id)
+                .in_("user_id", [customer.user_id, target_id])
+                .execute()
+            )
+            return resp.data
+
+        await run_in_threadpool(del_addr)
+        return {
+            "success": True,
+            "message": "Address deleted successfully",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to delete address: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/app_popups.py">
+from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/app-popups",
+    tags=["Customer App Popups"],
+)
+
+
+@router.get("")
+async def get_customer_app_popups():
+    try:
+        def fetch_popups():
+            client = get_supabase_client()
+
+            return (
+                client.table("app_popups")
+                .select("title, description, image_url")
+                .eq("is_active", True)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_popups)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch app popups at this time.",
+        )
+</file>
+
+<file path="App/Routers/bookings.py">
+from datetime import datetime, timezone
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/bookings",
+    tags=["Customer Bookings"],
+)
+
+
+class CreateBookingRequest(BaseModel):
+    customer_name: str
+    email: str | None = None
+    phone_number: str
+    full_address: str
+    services: list[Any] | None = None
+    booking_date: str
+    booking_time: str
+    total_amount: float
+    paid_amount: float | None = 0
+    remaining_amount: float | None = 0
+    payment_status: str = "PENDING"
+    payment_method: str = "COD"
+    payment_plan: str | None = "FULL"
+    razorpay_order_id: str | None = None
+    razorpay_payment_id: str | None = None
+    razorpay_signature: str | None = None
+    coupon_code: str | None = None
+    coupon_discount_percentage: float | None = None
+    coupon_discount_amount: float | None = None
+    wallet_deduction: float | None = 0
+    hub_name: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    promotional_banner_id: str | None = None
+    terms_accepted: bool | None = True
+
+
+class CancelBookingRequest(BaseModel):
+    cancel_reason: str = "Customer requested cancellation"
+
+
+class ChecklistItemRequest(BaseModel):
+    task_index: int
+    task_title: str
+    customer_completed: bool = True
+    partner_verified: bool | None = False
+
+
+class SubmitChecklistRequest(BaseModel):
+    items: list[ChecklistItemRequest]
+
+
+class SubmitReviewRequest(BaseModel):
+    rating: float
+    comment: str | None = None
+
+
+class UpdateBookingPaymentRequest(BaseModel):
+    payment_status: str | None = None
+    work_status: str | None = None
+    razorpay_payment_id: str | None = None
+    razorpay_order_id: str | None = None
+    razorpay_signature: str | None = None
+    payment_verified: bool | None = None
+    paid_amount: float | None = None
+    remaining_amount: float | None = None
+
+
+@router.post("/create")
+async def create_booking(
+    payload: CreateBookingRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def execute_create():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Auto-save / sync profile with name, phone, address
+            try:
+                prof_data: dict[str, Any] = {
+                    "full_name": payload.customer_name,
+                    "phone": payload.phone_number,
+                    "address": payload.full_address,
+                }
+                if payload.email:
+                    prof_data["email"] = payload.email
+                client.table("profile").update(prof_data).eq("id", target_id).execute()
+            except Exception:
+                pass
+
+            now_str = datetime.now(timezone.utc).isoformat()
+
+            booking_dict: dict[str, Any] = {
+                "user_id": target_id,
+                "customer_name": payload.customer_name,
+                "phone_number": payload.phone_number,
+                "full_address": payload.full_address,
+                "services": payload.services or [],
+                "booking_date": payload.booking_date,
+                "booking_time": payload.booking_time,
+                "total_amount": payload.total_amount,
+                "paid_amount": payload.paid_amount or 0,
+                "remaining_amount": payload.remaining_amount or 0,
+                "payment_status": payload.payment_status,
+                "payment_method": payload.payment_method,
+                "payment_plan": payload.payment_plan,
+                "work_status": "PENDING",
+                "created_at": now_str,
+                "terms_accepted": payload.terms_accepted,
+                "terms_accepted_at": now_str if payload.terms_accepted else None,
+            }
+
+            if payload.email:
+                booking_dict["email"] = payload.email
+            if payload.razorpay_order_id:
+                booking_dict["razorpay_order_id"] = payload.razorpay_order_id
+            if payload.razorpay_payment_id:
+                booking_dict["razorpay_payment_id"] = payload.razorpay_payment_id
+            if payload.razorpay_signature:
+                booking_dict["razorpay_signature"] = payload.razorpay_signature
+            if payload.coupon_code:
+                booking_dict["coupon_code"] = payload.coupon_code
+            if payload.coupon_discount_percentage is not None:
+                booking_dict["coupon_discount_percentage"] = payload.coupon_discount_percentage
+            if payload.coupon_discount_amount is not None:
+                booking_dict["coupon_discount_amount"] = payload.coupon_discount_amount
+            if payload.hub_name:
+                booking_dict["hub_name"] = payload.hub_name
+            if payload.latitude is not None:
+                booking_dict["latitude"] = payload.latitude
+            if payload.longitude is not None:
+                booking_dict["longitude"] = payload.longitude
+            if payload.promotional_banner_id:
+                booking_dict["promotional_banner_id"] = payload.promotional_banner_id
+
+            # Insert into bookings table
+            resp = client.table("bookings").insert(booking_dict).execute()
+            created = resp.data[0] if (resp and resp.data) else booking_dict
+            booking_uuid = created.get("id")
+
+            # Handle wallet deduction
+            if payload.wallet_deduction and payload.wallet_deduction > 0 and booking_uuid:
+                try:
+                    w_resp = client.table("wallet").select("balance").eq("user_id", target_id).maybe_single().execute()
+                    current_bal = (w_resp.data.get("balance", 0) or 0) if (w_resp and w_resp.data) else 0
+                    new_bal = max(0.0, current_bal - payload.wallet_deduction)
+                    client.table("wallet").update({"balance": new_bal}).eq("user_id", target_id).execute()
+
+                    client.table("wallet_transactions").insert({
+                        "user_id": target_id,
+                        "amount": -abs(payload.wallet_deduction),
+                        "transaction_type": "booking_payment",
+                        "description": f"Discount applied to booking #{booking_uuid}",
+                    }).execute()
+                except Exception:
+                    pass
+
+            # Mark coupon as used if manual coupon was used
+            if payload.coupon_code:
+                try:
+                    client.table("coupons").update({"is_used": True}).ilike("coupon_code", payload.coupon_code.strip()).execute()
+                except Exception:
+                    pass
+
+            # Clear cart for user
+            try:
+                client.table("cart_items").delete().in_("user_id", [customer.user_id, target_id]).execute()
+            except Exception:
+                pass
+
+            return created
+
+        booking = await run_in_threadpool(execute_create)
+        return {
+            "success": True,
+            "data": booking,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to create booking: {str(e)}",
+        )
+
+
+@router.get("/{booking_id}")
+async def get_booking_details(
+    booking_id: str,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_detail():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Query booking by id
+            resp = (
+                client.table("bookings")
+                .select("*")
+                .eq("id", booking_id)
+                .maybe_single()
+                .execute()
+            )
+            if not resp or not resp.data:
+                raise ValueError("Booking not found")
+
+            booking = resp.data
+
+            # Fetch assigned staff details if staff is assigned
+            staff_info = None
+            assigned_staff_id = booking.get("assigned_staff_id")
+            if assigned_staff_id:
+                staff_resp = (
+                    client.table("staff_profile")
+                    .select("id, name, phone, avatar_url, role, is_available")
+                    .eq("id", assigned_staff_id)
+                    .maybe_single()
+                    .execute()
+                )
+                if staff_resp and staff_resp.data:
+                    staff_info = staff_resp.data
+
+            return booking, staff_info
+
+        b_data, s_info = await run_in_threadpool(fetch_detail)
+        return {
+            "success": True,
+            "data": b_data,
+            "staff": s_info,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch booking details: {str(e)}",
+        )
+
+
+@router.post("/{booking_id}/cancel")
+async def cancel_booking(
+    booking_id: str,
+    payload: CancelBookingRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def do_cancel():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            now_str = datetime.now(timezone.utc).isoformat()
+
+            # Update booking to cancelled
+            update_data = {
+                "work_status": "CANCELLED",
+                "cancel_requested": True,
+                "cancel_reason": payload.cancel_reason,
+                "cancel_time": now_str,
+                "refund_status": "PENDING",
+            }
+
+            resp = (
+                client.table("bookings")
+                .update(update_data)
+                .eq("id", booking_id)
+                .in_("user_id", [customer.user_id, target_id])
+                .execute()
+            )
+            return resp.data[0] if (resp and resp.data) else update_data
+
+        cancelled = await run_in_threadpool(do_cancel)
+        return {
+            "success": True,
+            "data": cancelled,
+            "message": "Booking cancelled successfully",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to cancel booking: {str(e)}",
+        )
+
+
+@router.get("/{booking_id}/checklist")
+async def get_booking_checklist(
+    booking_id: str,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_checklist():
+            client = get_supabase_client()
+            resp = (
+                client.table("booking_checklists")
+                .select("*")
+                .eq("booking_id", booking_id)
+                .order("task_index", desc=False)
+                .execute()
+            )
+            return resp.data or []
+
+        items = await run_in_threadpool(fetch_checklist)
+        return {
+            "success": True,
+            "data": items,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch checklist: {str(e)}",
+        )
+
+
+@router.post("/{booking_id}/checklist")
+async def submit_booking_checklist(
+    booking_id: str,
+    payload: SubmitChecklistRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def save_checklist():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            now_str = datetime.now(timezone.utc).isoformat()
+
+            for item in payload.items:
+                row = {
+                    "booking_id": booking_id,
+                    "task_index": item.task_index,
+                    "task_title": item.task_title,
+                    "customer_completed": item.customer_completed,
+                    "partner_verified": item.partner_verified,
+                    "updated_at": now_str,
+                }
+                client.table("booking_checklists").upsert(
+                    row, on_conflict="booking_id,task_index"
+                ).execute()
+
+            # Mark checklist_submitted = 'TRUE' on bookings table
+            client.table("bookings").update({
+                "checklist_submitted": "TRUE",
+                "updated_at": now_str,
+            }).eq("id", booking_id).execute()
+
+            return True
+
+        await run_in_threadpool(save_checklist)
+        return {
+            "success": True,
+            "message": "Checklist submitted successfully",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to submit checklist: {str(e)}",
+        )
+
+
+@router.get("/{booking_id}/reviews")
+async def get_booking_review(
+    booking_id: str,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_review():
+            client = get_supabase_client()
+            resp = (
+                client.table("reviews")
+                .select("*")
+                .eq("booking_id", booking_id)
+                .maybe_single()
+                .execute()
+            )
+            return resp.data if resp else None
+
+        rev = await run_in_threadpool(fetch_review)
+        return {
+            "success": True,
+            "data": rev,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch review: {str(e)}",
+        )
+
+
+@router.post("/{booking_id}/reviews")
+async def submit_booking_review(
+    booking_id: str,
+    payload: SubmitReviewRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def save_review():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Check if review already exists
+            existing = (
+                client.table("reviews")
+                .select("id")
+                .eq("booking_id", booking_id)
+                .maybe_single()
+                .execute()
+            )
+
+            if existing and existing.data:
+                resp = (
+                    client.table("reviews")
+                    .update({
+                        "rating": payload.rating,
+                        "comment": payload.comment or "",
+                    })
+                    .eq("booking_id", booking_id)
+                    .execute()
+                )
+            else:
+                resp = (
+                    client.table("reviews")
+                    .insert({
+                        "booking_id": booking_id,
+                        "user_id": target_id,
+                        "rating": payload.rating,
+                        "comment": payload.comment or "",
+                    })
+                    .execute()
+                )
+            return resp.data[0] if (resp and resp.data) else None
+
+        saved = await run_in_threadpool(save_review)
+        return {
+            "success": True,
+            "data": saved,
+            "message": "Review submitted successfully",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to submit review: {str(e)}",
+        )
+
+
+@router.post("/{booking_id}/payment-status")
+async def update_booking_payment_status(
+    booking_id: str,
+    payload: UpdateBookingPaymentRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def execute_update():
+            client = get_supabase_client()
+            update_data = payload.model_dump(exclude_unset=True)
+            if not update_data:
+                return {}
+
+            resp = (
+                client.table("bookings")
+                .update(update_data)
+                .eq("id", booking_id)
+                .execute()
+            )
+            return resp.data[0] if (resp and resp.data) else update_data
+
+        result = await run_in_threadpool(execute_update)
+        return {
+            "success": True,
+            "data": result,
+            "message": "Payment status updated",
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to update payment status: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/cart.py">
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/cart",
+    tags=["Customer Cart"],
+)
+
+
+class AddCartItemRequest(BaseModel):
+    service_id: str
+    title: str
+    duration: str | None = None
+    price: str | None = None
+    image: str | None = None
+
+
+@router.get("")
+async def get_customer_cart(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_cart():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            resp = (
+                client.table("cart_items")
+                .select("id, service_id, title, duration, price, image")
+                .in_("user_id", [customer.user_id, target_id])
+                .order("created_at", desc=True)
+                .execute()
+            )
+            return resp.data or []
+
+        items = await run_in_threadpool(fetch_cart)
+        return {
+            "success": True,
+            "data": items,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch cart: {str(e)}",
+        )
+
+
+@router.post("/items")
+async def add_cart_item(
+    payload: AddCartItemRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def insert_item():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Check if item is already in cart to prevent duplicates
+            existing = (
+                client.table("cart_items")
+                .select("id")
+                .in_("user_id", [customer.user_id, target_id])
+                .eq("service_id", payload.service_id)
+                .maybe_single()
+                .execute()
+            )
+            if existing and existing.data:
+                return existing.data
+
+            data = {
+                "user_id": target_id,
+                "service_id": payload.service_id,
+                "title": payload.title,
+                "duration": payload.duration or "",
+                "price": payload.price or "",
+                "image": payload.image or "",
+            }
+            resp = client.table("cart_items").insert(data).execute()
+            return resp.data[0] if (resp and resp.data) else data
+
+        result = await run_in_threadpool(insert_item)
+        return {
+            "success": True,
+            "data": result,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to add item to cart: {str(e)}",
+        )
+
+
+@router.delete("/items/{service_id}")
+async def remove_cart_item(
+    service_id: str,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def delete_item():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            resp = (
+                client.table("cart_items")
+                .delete()
+                .in_("user_id", [customer.user_id, target_id])
+                .eq("service_id", service_id)
+                .execute()
+            )
+            return resp.data
+
+        await run_in_threadpool(delete_item)
+        return {
+            "success": True,
+            "message": "Item removed from cart",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to remove item from cart: {str(e)}",
+        )
+
+
+@router.delete("")
+async def clear_customer_cart(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def clear_cart():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            resp = (
+                client.table("cart_items")
+                .delete()
+                .in_("user_id", [customer.user_id, target_id])
+                .execute()
+            )
+            # Also clear any legacy cart table rows if present
+            try:
+                client.table("cart").delete().in_("user_id", [customer.user_id, target_id]).execute()
+            except Exception:
+                pass
+
+            return resp.data
+
+        await run_in_threadpool(clear_cart)
+        return {
+            "success": True,
+            "message": "Cart cleared successfully",
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to clear cart: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/coupons.py">
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/coupons",
+    tags=["Customer Coupons"],
+)
+
+
+class ValidateCouponRequest(BaseModel):
+    code: str
+    phone: str | None = None
+    banner_id: str | None = None
+
+
+@router.post("/validate")
+async def validate_coupon(
+    payload: ValidateCouponRequest,
+):
+    try:
+        def check_coupon():
+            client = get_supabase_client()
+            clean_code = payload.code.strip()
+
+            resp = (
+                client.table("coupons")
+                .select("*")
+                .ilike("coupon_code", clean_code)
+                .eq("is_active", True)
+                .eq("is_used", False)
+                .limit(1)
+                .execute()
+            )
+
+            if not resp.data or len(resp.data) == 0:
+                return {
+                    "valid": False,
+                    "message": "Invalid or expired coupon code.",
+                    "coupon": None,
+                }
+
+            coupon = resp.data[0]
+
+            # If coupon is tied to a specific phone number
+            coupon_phone = coupon.get("phone_number")
+            if coupon_phone and payload.phone:
+                clean_target_phone = "".join(filter(str.isdigit, str(payload.phone)))[-10:]
+                clean_coupon_phone = "".join(filter(str.isdigit, str(coupon_phone)))[-10:]
+                if clean_coupon_phone and clean_target_phone != clean_coupon_phone:
+                    return {
+                        "valid": False,
+                        "message": "This coupon is not valid for your account.",
+                        "coupon": None,
+                    }
+
+            return {
+                "valid": True,
+                "message": "Coupon applied successfully!",
+                "coupon": coupon,
+                "discount_percentage": coupon.get("discount_percentage", 0) or 0,
+                "discount_amount": coupon.get("discount_amount", 0) or 0,
+            }
+
+        res = await run_in_threadpool(check_coupon)
+        return {
+            "success": True,
+            **res,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to validate coupon: {str(e)}",
+        )
+
+
+@router.get("/my-coupons")
+async def get_my_coupons(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_user_coupons():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Check coupons by user_id or by phone
+            clean_phone = ""
+            if customer.phone:
+                clean_phone = "".join(filter(str.isdigit, str(customer.phone)))[-10:]
+
+            query = (
+                client.table("coupons")
+                .select("*")
+                .eq("is_active", True)
+                .eq("is_used", False)
+            )
+
+            if clean_phone:
+                # Phone or user_id match
+                resp = query.ilike("phone_number", f"%{clean_phone}%").execute()
+            else:
+                resp = query.in_("user_id", [customer.user_id, target_id]).execute()
+
+            return resp.data or []
+
+        coupons = await run_in_threadpool(fetch_user_coupons)
+        return {
+            "success": True,
+            "data": coupons,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch coupons: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/customer_auth_test.py">
+from fastapi import APIRouter, Depends
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+)
+
+
+router = APIRouter(
+    prefix="/api/v1/customer",
+    tags=["Customer Authentication"],
+)
+
+
+@router.get("/auth/me")
+async def get_authenticated_customer(
+    customer: AuthenticatedCustomer = Depends(
+        get_current_customer
+    ),
+):
+    return {
+        "success": True,
+        "data": {
+            "user_id": customer.user_id
+        },
+    }
+</file>
+
+<file path="App/Routers/hero_banners.py">
+from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/hero-banners",
+    tags=["Customer Hero Banners"],
+)
+
+
+@router.get("")
+async def get_customer_hero_banners():
+    try:
+        def fetch_banners():
+            client = get_supabase_client()
+
+            return (
+                client.table("hero_banners")
+                .select("image_path")
+                .eq("is_active", True)
+                .order("priority", desc=False)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_banners)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch hero banners at this time.",
+        )
+</file>
+
+<file path="App/Routers/hubs.py">
+from fastapi import APIRouter, HTTPException, Query, status
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/hubs",
+    tags=["Customer Hub Locations"],
+)
+
+
+@router.get("/check-pincode")
+async def check_pincode_serviceable(
+    pincode: str = Query(..., description="6-digit pincode"),
+    address: str | None = Query(None, description="Optional full address string"),
+):
+    try:
+        def check_serviceability():
+            client = get_supabase_client()
+            clean_pin = "".join(filter(str.isdigit, pincode)).strip()
+
+            # 1. Exact Pincode match
+            if len(clean_pin) == 6:
+                resp = (
+                    client.table("hub_locations")
+                    .select("*")
+                    .eq("pincode", clean_pin)
+                    .eq("is_active", True)
+                    .execute()
+                )
+                if resp.data and len(resp.data) > 0:
+                    return {
+                        "serviceable": True,
+                        "hub": resp.data[0],
+                    }
+
+            # 2. Address string fallback
+            if address:
+                addr_upper = address.upper()
+                all_resp = (
+                    client.table("hub_locations")
+                    .select("*")
+                    .eq("is_active", True)
+                    .execute()
+                )
+                if all_resp.data:
+                    for h in all_resp.data:
+                        loc_name = str(h.get("location_name") or "").upper().strip()
+                        if loc_name and loc_name in addr_upper:
+                            return {
+                                "serviceable": True,
+                                "hub": h,
+                            }
+
+            return {
+                "serviceable": False,
+                "hub": None,
+            }
+
+        result = await run_in_threadpool(check_serviceability)
+        return {
+            "success": True,
+            **result,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to check pincode: {str(e)}",
+        )
+
+
+@router.get("/locations")
+async def get_active_hubs():
+    try:
+        def fetch_hubs():
+            client = get_supabase_client()
+            resp = (
+                client.table("hub_locations")
+                .select("*")
+                .eq("is_active", True)
+                .execute()
+            )
+            return resp.data or []
+
+        hubs = await run_in_threadpool(fetch_hubs)
+        return {
+            "success": True,
+            "data": hubs,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch hub locations: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/main_categories.py">
+from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/main-categories",
+    tags=["Customer Main Categories"],
+)
+
+
+@router.get("")
+async def get_main_categories():
+    try:
+        def fetch_categories():
+            client = get_supabase_client()
+
+            return (
+                client.table("main_categories")
+                .select("*")
+                .order("sort_order", desc=False)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_categories)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch main categories at this time.",
+        )
+</file>
+
+<file path="App/Routers/my_bookings.py">
+from fastapi import APIRouter, Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/my-bookings",
+    tags=["Customer My Bookings"],
+)
+
+
+@router.get("")
+async def get_my_bookings(
+    customer: AuthenticatedCustomer = Depends(
+        get_current_customer
+    ),
+):
+    """
+    Return booking history belonging to the authenticated customer,
+    including legacy phone-matched profile bookings.
+    """
+
+    try:
+        def fetch_bookings():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            if target_id and target_id != customer.user_id:
+                # Query both IDs
+                response = (
+                    client.table("bookings")
+                    .select("*")
+                    .in_("user_id", [customer.user_id, target_id])
+                    .order("created_at", desc=True)
+                    .execute()
+                )
+            else:
+                response = (
+                    client.table("bookings")
+                    .select("*")
+                    .eq("user_id", customer.user_id)
+                    .order("created_at", desc=True)
+                    .execute()
+                )
+
+            return response.data or []
+
+        bookings = await run_in_threadpool(fetch_bookings)
+
+        return {
+            "success": True,
+            "data": bookings,
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch customer bookings at this time.",
+        )
+</file>
+
+<file path="App/Routers/offers.py">
+from fastapi import APIRouter, HTTPException
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/offers",
+    tags=["Customer Offers"],
+)
+
+
+@router.get("")
+async def get_customer_offers():
+    try:
+        def fetch_offers():
+            client = get_supabase_client()
+
+            return (
+                client.table("offers")
+                .select(
+                    "title, service_type, offer_percentage, description"
+                )
+                .eq("is_offer_enabled", True)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_offers)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch customer offers at this time.",
+        )
+</file>
+
+<file path="App/Routers/policies.py">
+from fastapi import APIRouter, HTTPException, status
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/policies",
+    tags=["Customer Policies"],
+)
+
+
+@router.get("")
+async def get_customer_policies():
+    """
+    Public endpoint to fetch active app policies, terms, and cancellation rules.
+    """
+    try:
+        def fetch_policies():
+            client = get_supabase_client()
+            response = (
+                client.table("app_policies")
+                .select("*")
+                .eq("is_active", True)
+                .limit(1)
+                .execute()
+            )
+            return response.data[0] if (response and response.data) else None
+
+        policy = await run_in_threadpool(fetch_policies)
+        return {
+            "success": True,
+            "data": policy,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch policies: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/profile.py">
+from typing import Any
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/profile",
+    tags=["Customer Profile"],
+)
+
+
+class UpdateProfileRequest(BaseModel):
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    pincode: str | None = None
+    service_selected: str | None = None
+    promotional_banner_selected: str | None = None
+    referral_code: str | None = None
+
+
+@router.get("")
+async def get_customer_profile(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_data():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # 1. Fetch Profile
+            profile_resp = (
+                client.table("profile")
+                .select("*")
+                .eq("id", target_id)
+                .maybe_single()
+                .execute()
+            )
+            profile_data = profile_resp.data if profile_resp else None
+
+            # Fallback by phone if not found by ID
+            if not profile_data and customer.phone:
+                clean_phone = "".join(filter(str.isdigit, str(customer.phone)))[-10:]
+                if clean_phone:
+                    phone_resp = (
+                        client.table("profile")
+                        .select("*")
+                        .ilike("phone", f"%{clean_phone}%")
+                        .order("created_at", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if phone_resp.data and len(phone_resp.data) > 0:
+                        profile_data = phone_resp.data[0]
+                        target_id = str(profile_data.get("id"))
+
+            # 2. Fetch Wallet
+            wallet_resp = (
+                client.table("wallet")
+                .select("balance")
+                .eq("user_id", target_id)
+                .maybe_single()
+                .execute()
+            )
+            wallet_balance = 0
+            if wallet_resp and wallet_resp.data:
+                wallet_balance = wallet_resp.data.get("balance", 0) or 0
+            else:
+                # Auto-initialize wallet if missing
+                try:
+                    client.table("wallet").insert({"user_id": target_id, "balance": 0}).execute()
+                except Exception:
+                    pass
+
+            return profile_data, wallet_balance, target_id
+
+        profile, wallet_bal, resolved_id = await run_in_threadpool(fetch_data)
+
+        return {
+            "success": True,
+            "data": profile,
+            "resolved_user_id": resolved_id,
+            "wallet_balance": wallet_bal,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch profile: {str(e)}",
+        )
+
+
+@router.put("")
+async def update_customer_profile(
+    payload: UpdateProfileRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def save_profile():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            update_dict = payload.model_dump(exclude_unset=True)
+
+            if not update_dict:
+                return None
+
+            # Check if profile row exists
+            existing = (
+                client.table("profile")
+                .select("id")
+                .eq("id", target_id)
+                .maybe_single()
+                .execute()
+            )
+
+            if existing and existing.data:
+                resp = (
+                    client.table("profile")
+                    .update(update_dict)
+                    .eq("id", target_id)
+                    .execute()
+                )
+            else:
+                # Upsert / insert new profile
+                update_dict["id"] = target_id
+                resp = client.table("profile").insert(update_dict).execute()
+
+            return resp.data[0] if (resp and resp.data and len(resp.data) > 0) else update_dict
+
+        updated = await run_in_threadpool(save_profile)
+
+        return {
+            "success": True,
+            "data": updated,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to update profile: {str(e)}",
+        )
+
+
+@router.get("/validate-referral")
+async def validate_referral_code(
+    code: str = Query(..., description="Referral code to check"),
+):
+    try:
+        def check():
+            client = get_supabase_client()
+            resp = (
+                client.table("profile")
+                .select("id")
+                .eq("referral_code", code.strip().upper())
+                .maybe_single()
+                .execute()
+            )
+            return resp.data
+
+        data = await run_in_threadpool(check)
+        return {
+            "success": True,
+            "valid": bool(data),
+            "referrer_id": data.get("id") if data else None,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to validate referral code: {str(e)}",
+        )
+
+
+class SavePushTokenRequest(BaseModel):
+    token: str
+    platform: str = "android"
+
+
+@router.post("/push-token")
+async def save_push_token(
+    payload: SavePushTokenRequest,
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def save():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            # Clear old token associations
+            client.table("push_tokens").delete().eq("token", payload.token).execute()
+
+            # Upsert for current user
+            resp = (
+                client.table("push_tokens")
+                .upsert({
+                    "user_id": target_id,
+                    "token": payload.token,
+                    "platform": payload.platform,
+                }, on_conflict="user_id")
+                .execute()
+            )
+            return resp.data
+
+        saved = await run_in_threadpool(save)
+        return {
+            "success": True,
+            "data": saved,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to save push token: {str(e)}",
+        )
+
+
+@router.delete("/push-token")
+async def remove_push_token(
+    token: str = Query(..., description="Device push token to remove"),
+):
+    try:
+        def remove():
+            client = get_supabase_client()
+            resp = client.table("push_tokens").delete().eq("token", token).execute()
+            return resp.data
+
+        await run_in_threadpool(remove)
+        return {
+            "success": True,
+            "message": "Push token removed",
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to remove push token: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/promotional_banners.py">
+from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.concurrency import run_in_threadpool
+
+from App.Dependencies.customer_auth import (
+    AuthenticatedCustomer,
+    get_current_customer,
+    resolve_customer_target_id,
+)
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/promotional-banners",
+    tags=["Customer Promotional Banners"],
+)
+
+
+@router.get("")
+async def get_customer_promotional_banners():
+    try:
+        def fetch_banners():
+            client = get_supabase_client()
+
+            return (
+                client.table("promotional_banners")
+                .select("*")
+                .eq("is_active", True)
+                .eq("banner_type", "customer_app")
+                .order("display_order", desc=False)
+                .execute()
+            )
+
+        response = await run_in_threadpool(fetch_banners)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch promotional banners at this time.",
+        )
+
+
+@router.get("/relations")
+async def get_promotional_banner_relations():
+    try:
+        def fetch_relations():
+            client = get_supabase_client()
+            loc_resp = (
+                client.table("promotional_banner_locations")
+                .select("banner_id, location_id")
+                .execute()
+            )
+            svc_resp = (
+                client.table("promotional_banner_services")
+                .select("banner_id, service_id")
+                .execute()
+            )
+            return {
+                "locations": loc_resp.data or [],
+                "services": svc_resp.data or [],
+            }
+
+        relations = await run_in_threadpool(fetch_relations)
+        return {
+            "success": True,
+            "data": relations,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch banner relations: {str(e)}",
+        )
+
+
+@router.get("/consumed")
+async def get_consumed_promotional_banners(
+    customer: AuthenticatedCustomer = Depends(get_current_customer),
+):
+    try:
+        def fetch_consumed():
+            client = get_supabase_client()
+            target_id = resolve_customer_target_id(client, customer)
+
+            user_ids = list({customer.user_id, target_id})
+            resp = (
+                client.table("bookings")
+                .select("promotional_banner_id, work_status")
+                .in_("user_id", user_ids)
+                .not_.is_("promotional_banner_id", "null")
+                .execute()
+            )
+            data = resp.data or []
+            consumed_ids = set()
+            for row in data:
+                ws = str(row.get("work_status") or "").strip().upper()
+                if ws == "COMPLETED" and row.get("promotional_banner_id"):
+                    consumed_ids.add(row["promotional_banner_id"])
+            return list(consumed_ids)
+
+        consumed = await run_in_threadpool(fetch_consumed)
+        return {
+            "success": True,
+            "data": consumed,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch consumed banners: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/schedule.py">
+from fastapi import APIRouter, HTTPException, Query, status
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+
+router = APIRouter(
+    prefix="/api/v1/customer/schedule",
+    tags=["Customer Scheduling"],
+)
+
+
+@router.get("/config")
+async def get_schedule_config():
+    """
+    Public endpoint to fetch calendar and time slots configuration.
+    """
+    try:
+        def fetch_config():
+            client = get_supabase_client()
+            resp = client.table("schedule_config").select("*").execute()
+            data = resp.data or []
+            # Transform key-value config rows into a convenient dictionary
+            config_dict = {}
+            for row in data:
+                key = row.get("config_key")
+                val = row.get("config_value")
+                if key:
+                    config_dict[key] = val
+            return config_dict, data
+
+        cfg_dict, raw_data = await run_in_threadpool(fetch_config)
+        return {
+            "success": True,
+            "data": cfg_dict,
+            "raw": raw_data,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch schedule configuration: {str(e)}",
+        )
+
+
+@router.get("/capacity-check")
+async def check_schedule_capacity(
+    booking_date: str = Query(..., description="Date in YYYY-MM-DD or DD/MM/YYYY"),
+    hub_name: str = Query(..., description="Hub name"),
+    category: str | None = Query(None, description="Main category or service type"),
+):
+    try:
+        def fetch_capacity():
+            client = get_supabase_client()
+
+            # 1. Fetch staff count for this hub and category
+            staff_count = 1
+            query = client.table("hub_category_counts").select("*").ilike("hub", f"%{hub_name.strip()}%")
+            if category:
+                query = query.ilike("category", f"%{category.strip()}%")
+            cat_resp = query.execute()
+
+            if cat_resp.data and len(cat_resp.data) > 0:
+                count_val = cat_resp.data[0].get("count")
+                if count_val is not None:
+                    staff_count = int(count_val)
+
+            # 2. Fetch existing bookings on that date in this hub
+            booking_resp = (
+                client.table("bookings")
+                .select("id, booking_time, work_status")
+                .eq("booking_date", booking_date)
+                .ilike("hub_name", f"%{hub_name.strip()}%")
+                .neq("work_status", "CANCELLED")
+                .execute()
+            )
+            booked_slots: dict[str, int] = {}
+            if booking_resp.data:
+                for b in booking_resp.data:
+                    slot = b.get("booking_time")
+                    if slot:
+                        booked_slots[slot] = booked_slots.get(slot, 0) + 1
+
+            return staff_count, booked_slots
+
+        staff_limit, slots_used = await run_in_threadpool(fetch_capacity)
+        return {
+            "success": True,
+            "data": {
+                "staff_count": staff_limit,
+                "booked_slots": slots_used,
+            },
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to check capacity: {str(e)}",
+        )
+
+
+@router.get("/date-bookings")
+async def get_date_bookings(
+    booking_date: str = Query(..., description="Date substring or YYYY-MM-DD"),
+):
+    try:
+        def fetch():
+            client = get_supabase_client()
+            resp = (
+                client.table("bookings")
+                .select("id, booking_date, booking_time, work_status, payment_status, hub_name")
+                .ilike("booking_date", f"%{booking_date.strip()}%")
+                .execute()
+            )
+            return resp.data or []
+
+        bookings = await run_in_threadpool(fetch)
+        return {
+            "success": True,
+            "data": bookings,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch date bookings: {str(e)}",
+        )
+
+
+@router.get("/hub-category-counts")
+async def get_hub_category_counts(
+    hub: str = Query(..., description="Hub name to filter category counts"),
+):
+    try:
+        def fetch():
+            client = get_supabase_client()
+            resp = (
+                client.table("hub_category_counts")
+                .select("count, category, hub")
+                .ilike("hub", hub.strip())
+                .execute()
+            )
+            return resp.data or []
+
+        counts = await run_in_threadpool(fetch)
+        return {
+            "success": True,
+            "data": counts,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unable to fetch category counts: {str(e)}",
+        )
+</file>
+
+<file path="App/Routers/services.py">
+from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
+
+from Supabase.client import get_supabase_client
+
+router = APIRouter(
+    prefix="/api/v1/customer/services",
+    tags=["Customer Services"],
+)
+
+
+@router.get("")
+async def get_services(
+    service_type: str | None = Query(default=None),
+    main_category_id: str | None = Query(default=None),
+):
+    try:
+        def fetch_services():
+            client = get_supabase_client()
+
+            query = (
+                client.table("services")
+                .select("*")
+                .order("sort_order", desc=False)
+            )
+
+            if service_type is not None:
+                query = query.eq("service_type", service_type)
+
+            if main_category_id is not None:
+                query = query.eq("main_category_id", main_category_id)
+
+            return query.execute()
+
+        response = await run_in_threadpool(fetch_services)
+
+        return {
+            "success": True,
+            "data": response.data or [],
+        }
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch services at this time.",
+        )
+
+@router.get("/{service_identifier}")
+async def get_service_details(service_identifier: str):
+    try:
+        def fetch_service():
+            client = get_supabase_client()
+
+            # First: find service using slug
+            response = (
+                client.table("services")
+                .select("*")
+                .eq("slug", service_identifier)
+                .limit(1)
+                .execute()
+            )
+
+            if response.data:
+                return response.data[0]
+
+            # Fallback: find service using UUID
+            # Validate before querying a UUID column
+            from uuid import UUID
+
+            try:
+                UUID(service_identifier)
+            except (ValueError, AttributeError):
+                return None
+
+            response = (
+                client.table("services")
+                .select("*")
+                .eq("id", service_identifier)
+                .limit(1)
+                .execute()
+            )
+
+            return response.data[0] if response.data else None
+
+        service = await run_in_threadpool(fetch_service)
+
+        if service is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Service not found."
+            )
+
+        return {
+            "success": True,
+            "data": service
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch service details at this time."
+        )
+
+
+@router.get("/{service_id}/videos")
+async def get_service_videos(service_id: str):
+    try:
+        def fetch():
+            client = get_supabase_client()
+            resp = (
+                client.table("service_how_it_works_videos")
+                .select("*")
+                .eq("service_id", service_id)
+                .eq("is_active", True)
+                .order("sort_order", desc=False)
+                .execute()
+            )
+            return resp.data or []
+
+        videos = await run_in_threadpool(fetch)
+        return {
+            "success": True,
+            "data": videos,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to fetch service videos: {str(e)}",
+        )
+</file>
+
+<file path="App/__init__.py">
+
+</file>
+
+<file path="App/main.py">
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from App.Routers.main_categories import router as main_categories_router
+from App.Routers.services import router as services_router
+from App.Routers.promotional_banners import router as promotional_banners_router
+from App.Routers.offers import router as offers_router
+from App.Routers.addons import router as addons_router
+from App.Routers.customer_auth_test import router as customer_auth_test_router
+from App.Routers.hero_banners import router as hero_banners_router
+from App.Routers.app_popups import router as app_popups_router
+from App.Routers.my_bookings import router as my_bookings_router
+from App.Routers.profile import router as profile_router
+from App.Routers.addresses import router as addresses_router
+from App.Routers.policies import router as policies_router
+from App.Routers.hubs import router as hubs_router
+from App.Routers.schedule import router as schedule_router
+from App.Routers.cart import router as cart_router
+from App.Routers.coupons import router as coupons_router
+from App.Routers.bookings import router as bookings_router
+
+app = FastAPI(
+    title="Neatify Customer Backend",
+    description="REST API for the Neatify Customer Application",
+    version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(services_router)
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": "Neatify Customer Backend is running"
+    }
+
+
+@app.get("/health")
+async def health():
+    return {
+        "status": "healthy",
+        "service": "neatify-customer-backend"
+    }
+
+app.include_router(main_categories_router)
+app.include_router(addons_router)
+app.include_router(offers_router)
+app.include_router(hero_banners_router)
+app.include_router(app_popups_router)
+app.include_router(promotional_banners_router)
+app.include_router(customer_auth_test_router)
+app.include_router(my_bookings_router)
+app.include_router(profile_router)
+app.include_router(addresses_router)
+app.include_router(policies_router)
+app.include_router(hubs_router)
+app.include_router(schedule_router)
+app.include_router(cart_router)
+app.include_router(coupons_router)
+app.include_router(bookings_router)
+</file>
+
+<file path="Supabase/__init__.py">
+
+</file>
+
+<file path="Supabase/client.py">
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+from supabase import Client, create_client
+
+# Ensure .env from CUSTOMER-BACKEND root is loaded regardless of current working directory
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+if _ENV_PATH.exists():
+    load_dotenv(dotenv_path=_ENV_PATH)
+else:
+    load_dotenv()
+
+SUPABASE_URL = (
+    os.getenv("SUPABASE_URL", "").strip()
+    or os.getenv("EXPO_PUBLIC_SUPABASE_URL", "").strip()
+)
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_ANON_KEY = (
+    os.getenv("SUPABASE_ANON_KEY", "").strip()
+    or os.getenv("EXPO_PUBLIC_SUPABASE_ANON_KEY", "").strip()
+)
+
+
+def get_supabase_client() -> Client:
+    """
+    Create a Supabase client using the project URL.
+
+    Uses SUPABASE_SERVICE_ROLE_KEY if available so server-side operations bypass RLS.
+    Falls back to SUPABASE_ANON_KEY if service role key is not configured.
+    """
+    if not SUPABASE_URL:
+        raise RuntimeError("SUPABASE_URL is not configured.")
+
+    key = SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY
+    if not key:
+        raise RuntimeError("Neither SUPABASE_SERVICE_ROLE_KEY nor SUPABASE_ANON_KEY is configured.")
+
+    return create_client(SUPABASE_URL, key)
+</file>
+
+<file path="Supabase/database.py">
+import os
+
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+engine = None
+AsyncSessionLocal = None
+
+if DATABASE_URL:
+    if not DATABASE_URL.startswith("postgresql+asyncpg://"):
+        raise ValueError(
+            "DATABASE_URL must begin with postgresql+asyncpg://"
+        )
+
+    engine = create_async_engine(
+        DATABASE_URL,
+        echo=False,
+        pool_pre_ping=True,
+    )
+
+    AsyncSessionLocal = async_sessionmaker(
+        bind=engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+
+async def get_db():
+    if AsyncSessionLocal is None:
+        raise RuntimeError(
+            "DATABASE_URL is not configured."
+        )
+
+    async with AsyncSessionLocal() as session:
+        yield session
+</file>
+
+<file path=".env.example">
+# APP_NAME=Neatify Customer Backend
+# APP_ENV=development
+
+# SUPABASE_URL=
+# SUPABASE_PUBLISHABLE_KEY=
+# SUPABASE_SECRET_KEY=
+
+# DATABASE_URL=
+
+
+
+
+
+# EXPO_PUBLIC_SUPABASE_URL=https://auth.theneatifyteam.in
+# EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhZXJ0ZWZlYmJvbnhxaXd0b3RlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3MDI3MTksImV4cCI6MjA4NjI3ODcxOX0.fq-YY1yXfKPlmB3xyp_cTQLSNg-pcIMBW9XwgIAFjb8
+# EXPO_PUBLIC_RAZORPAY_KEY=rzp_live_S8Q9qKRt3FeoDC
+# EXPO_PUBLIC_ORDER_SERVER_URL=https://auth.theneatifyteam.in.supabase.co/functions/v1
+# MSG91_AUTH_KEY=522455A28iNsrg6a214d09P1
+# SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhhZXJ0ZWZlYmJvbnhxaXd0b3RlIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MDcwMjcxOSwiZXhwIjoyMDg2Mjc4NzE5fQ.80bmDhPyV-axxADCKjVJhfMfUcH0BnAjeNhz5Fk9zNQ
+
+
+
+
+# EXPO_PUBLIC_SUPABASE_URL=https://gdhtydiycsgxcxestwin.supabase.co
+# EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdkaHR5ZGl5Y3NneGN4ZXN0d2luIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3OTQyMDUsImV4cCI6MjA4ODM3MDIwNX0.nbMCxiA4z35d3Mf7jjQ2PygmRZdIfDuweC3inm0sRC0
+# SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdkaHR5ZGl5Y3NneGN4ZXN0d2luIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mjc5NDIwNSwiZXhwIjoyMDg4MzcwMjA1fQ.rCB-3hfStipp6Gk7ul-a4jmM6zlHK7zVH30N_icMOfw
+# MSG91_AUTH_KEY=522455A28iNsrg6a214d09P1
+# EXPO_PUBLIC_RAZORPAY_KEY=rzp_live_TUmd2IkouDxSXi
+# RAZORPAY_KEY_SECRET=kMMjDTtqvQwZkX1KQqtt3O0Y
+# EXPO_PUBLIC_ORDER_SERVER_URL=https://gdhtydiycsgxcxestwin.supabase.co/functions/v1
+# MSG91_FLOW_ID=6a9ffd8ebd67e6b8ea0cc592
+</file>
+
+<file path=".gitignore">
+venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+</file>
+
+<file path="Dockerfile">
+FROM python:3.11-slim
+
+WORKDIR /app
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "App.main:app", "--host", "0.0.0.0", "--port", "8000"]
+</file>
+
+<file path="Procfile">
+web: uvicorn App.main:app --host 0.0.0.0 --port $PORT
+</file>
+
+<file path="requirements.txt">
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+asyncpg==0.32.0
+certifi==2026.10.19
+cffi==2.1.1
+click==8.5.0
+cryptography==50.0.2
+deprecation==2.1.0
+fastapi==0.159.1
+greenlet==3.5.6
+h11==0.16.0
+h2==4.4.1
+hpack==4.2.0
+httpcore==1.0.9
+httptools==0.9.0
+httpx==0.28.1
+hyperframe==6.1.0
+idna==3.20
+multidict==7.1.0
+opentelemetry-api==1.45.1
+packaging==26.3
+postgrest==2.33.0
+propcache==0.5.4
+pycparser==3.11
+pydantic==2.14.1
+pydantic_core==2.50.1
+PyJWT==2.15.1
+python-dotenv==1.2.4
+PyYAML==6.0.3
+realtime==2.33.0
+SQLAlchemy==2.1.6
+starlette==1.9.0
+storage3==2.33.0
+StrEnum==0.4.15
+supabase==2.33.0
+supabase-auth==2.33.0
+supabase-functions==2.33.0
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+uvicorn==0.54.0
+watchfiles==1.3.0
+websockets==15.0.1
+yarl==1.25.1
+</file>
+
+</files>
