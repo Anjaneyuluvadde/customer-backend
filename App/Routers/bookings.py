@@ -75,6 +75,8 @@ class UpdateBookingPaymentRequest(BaseModel):
     payment_verified: bool | None = None
     paid_amount: float | None = None
     remaining_amount: float | None = None
+    payment_plan: str | None = None
+    payment_type: str | None = None
 
 
 @router.post("/create")
