@@ -102,11 +102,18 @@ async def create_razorpay_order(
 
             if resp.status_code not in (200, 201):
                 err_msg = data.get("error", {}).get("description") or "Failed to create Razorpay order"
-                logger.error(f"Razorpay order creation failed: {data}")
+                logger.error(f"❌ [PAYMENT ORDER FAILED] Booking: #{payload.booking_id} | Amount: ₹{payload.amount} | Error: {err_msg}")
                 raise HTTPException(status_code=400, detail=err_msg)
 
             # Ensure client has key for opening checkout
             data["key"] = RAZORPAY_KEY_ID
+            customer_identifier = customer.phone or customer.email or customer.user_id
+            order_id = data.get("id", "N/A")
+            logger.info(
+                f"💳 [PAYMENT ORDER CREATED] Booking: #{payload.booking_id or 'NEW'} | "
+                f"Amount: ₹{payload.amount} | Plan: {payload.payment_type or 'FULL'} | "
+                f"OrderID: {order_id} | User: {customer_identifier}"
+            )
             return {
                 "success": True,
                 "data": data,
@@ -161,8 +168,9 @@ async def verify_razorpay_payment(
         ).hexdigest()
 
         if expected_sig != payload.razorpay_signature:
-            logger.warning(
-                f"Invalid payment signature: expected={expected_sig}, received={payload.razorpay_signature}"
+            logger.error(
+                f"❌ [PAYMENT VERIFICATION FAILED] Booking: #{payload.booking_id} | "
+                f"PaymentID: {payload.razorpay_payment_id} | Reason: Invalid HMAC Signature"
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -282,10 +290,17 @@ async def verify_razorpay_payment(
 
         client.table("bookings").update(update_data).eq("id", payload.booking_id).execute()
 
-        return total_paid, remaining_amount, payment_status
+        customer_name = booking.get("customer_name") or "Customer"
+        return total_paid, remaining_amount, payment_status, customer_name
 
     try:
-        paid, remaining, p_status = await run_in_threadpool(execute_db_update)
+        paid, remaining, p_status, customer_name = await run_in_threadpool(execute_db_update)
+
+        logger.info(
+            f"✅ [PAYMENT VERIFIED SUCCESS] Booking: #{payload.booking_id} | "
+            f"PaymentID: {payload.razorpay_payment_id} | Paid: ₹{paid} | "
+            f"Remaining: ₹{remaining} | Status: {p_status.upper()} | Customer: {customer_name}"
+        )
 
         # 4. Trigger background notifications (email, WhatsApp)
         background_tasks.add_task(
@@ -303,7 +318,10 @@ async def verify_razorpay_payment(
         }
 
     except Exception as e:
-        logger.error(f"Error in verify_razorpay_payment: {e}")
+        logger.error(
+            f"❌ [PAYMENT VERIFICATION FAILED] Booking: #{payload.booking_id} | "
+            f"PaymentID: {payload.razorpay_payment_id} | Error: {e}"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to verify payment: {str(e)}",

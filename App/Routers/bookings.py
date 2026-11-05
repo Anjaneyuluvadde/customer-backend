@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,7 @@ from App.Dependencies.customer_auth import (
 )
 from Supabase.client import get_supabase_client
 
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/api/v1/customer/bookings",
@@ -185,12 +187,19 @@ async def create_booking(
             return created
 
         booking = await run_in_threadpool(execute_create)
+        booking_uuid = booking.get("id") or "UNKNOWN"
+        logger.info(
+            f"📦 [BOOKING CREATED] Booking: #{booking_uuid} | "
+            f"Customer: {payload.customer_name} ({payload.phone_number}) | "
+            f"Total: ₹{payload.total_amount} | Plan: {payload.payment_plan or 'FULL'}"
+        )
         return {
             "success": True,
             "data": booking,
         }
 
     except Exception as e:
+        logger.error(f"❌ [BOOKING CREATION FAILED] Customer: {payload.customer_name} | Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to create booking: {str(e)}",
@@ -481,12 +490,27 @@ async def update_booking_payment_status(
             return resp.data[0] if (resp and resp.data) else update_data
 
         result = await run_in_threadpool(execute_update)
+
+        p_status = (payload.payment_status or "unknown").lower()
+        w_status = payload.work_status or "unknown"
+        if p_status in ("failed", "cancelled") or "FAIL" in w_status.upper() or "CANCEL" in w_status.upper():
+            logger.warning(
+                f"❌ [PAYMENT FAILED / CANCELLED] Booking: #{booking_id} | "
+                f"Status: {payload.payment_status or p_status} | WorkStatus: {w_status}"
+            )
+        else:
+            logger.info(
+                f"🔄 [PAYMENT STATUS UPDATED] Booking: #{booking_id} | "
+                f"Status: {payload.payment_status} | WorkStatus: {w_status}"
+            )
+
         return {
             "success": True,
             "data": result,
             "message": "Payment status updated",
         }
     except Exception as e:
+        logger.error(f"❌ [PAYMENT STATUS UPDATE ERROR] Booking: #{booking_id} | Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to update payment status: {str(e)}",

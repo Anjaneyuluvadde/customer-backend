@@ -1,5 +1,15 @@
+import logging
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Configure application-wide logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("neatify-customer-backend")
 from App.Routers.main_categories import router as main_categories_router
 from App.Routers.services import router as services_router
 from App.Routers.promotional_banners import router as promotional_banners_router
