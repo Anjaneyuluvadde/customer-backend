@@ -102,6 +102,7 @@ async def send_customer_otp(payload: SendOtpRequest):
             logger.error(f"Failed to dispatch SMS via MSG91: {msg_err}")
             # Don't fail the API call if SMS gateway blips; OTP is saved in DB
 
+    logger.info(f"📨 [AUTH OTP SENT] Phone: {clean_phone}")
     return {
         "success": True,
         "message": "OTP sent successfully",
@@ -201,18 +202,19 @@ async def verify_customer_otp(payload: VerifyOtpRequest):
         target_email = dummy_email
         formatted_phone = f"+91{clean_phone}"
 
-        # Check existing profile
+        # Check existing profile (use order + limit(1) to avoid 406 if multiple profile rows exist for phone)
         prof_resp = (
             client.table("profile")
             .select("id")
-            .eq("phone", clean_phone)
-            .maybe_single()
+            .ilike("phone", f"%{clean_phone}%")
+            .order("created_at", desc=True)
+            .limit(1)
             .execute()
         )
 
         user_id = None
-        if prof_resp and prof_resp.data:
-            user_id = str(prof_resp.data.get("id"))
+        if prof_resp and prof_resp.data and len(prof_resp.data) > 0:
+            user_id = str(prof_resp.data[0].get("id"))
             try:
                 user_auth = client.auth.admin.get_user_by_id(user_id)
                 if user_auth and user_auth.user and user_auth.user.email:
@@ -297,6 +299,7 @@ async def verify_customer_otp(payload: VerifyOtpRequest):
 
     try:
         session_data, user_data = await run_in_threadpool(resolve_and_mint_session)
+        logger.info(f"🔑 [AUTH OTP VERIFIED] Phone: {clean_phone} | UserID: {user_data.get('id')}")
         return {
             "success": True,
             "session": session_data,
@@ -304,7 +307,7 @@ async def verify_customer_otp(payload: VerifyOtpRequest):
             "message": "OTP verified successfully",
         }
     except Exception as e:
-        logger.error(f"Error in verify_customer_otp: {e}")
+        logger.error(f"❌ [AUTH OTP VERIFY FAILED] Phone: {clean_phone} | Error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to verify OTP: {str(e)}",
