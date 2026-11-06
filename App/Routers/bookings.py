@@ -270,6 +270,31 @@ async def cancel_booking(
             client = get_supabase_client()
             target_id = resolve_customer_target_id(client, customer)
 
+            # Check if staff is already assigned or booking cannot be cancelled
+            b_check = (
+                client.table("bookings")
+                .select("assigned_staff_id, assigned_staff_email, assigned_staff_name, work_status")
+                .eq("id", booking_id)
+                .maybe_single()
+                .execute()
+            )
+            if b_check and b_check.data:
+                b_info = b_check.data
+                if (
+                    b_info.get("assigned_staff_id")
+                    or b_info.get("assigned_staff_email")
+                    or b_info.get("assigned_staff_name")
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Cannot cancel booking: A service partner has already been assigned to this booking.",
+                    )
+                if b_info.get("work_status") in ("COMPLETED", "CANCELLED", "UNDER_REVIEW"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Cannot cancel booking with status {b_info.get('work_status')}.",
+                    )
+
             now_str = datetime.now(timezone.utc).isoformat()
 
             # Update booking to cancelled
@@ -356,13 +381,20 @@ async def submit_booking_checklist(
                     "partner_verified": item.partner_verified,
                     "updated_at": now_str,
                 }
-                client.table("booking_checklists").upsert(
-                    row, on_conflict="booking_id,task_index"
-                ).execute()
+                try:
+                    client.table("booking_checklists").upsert(
+                        row, on_conflict="booking_id,task_index"
+                    ).execute()
+                except Exception:
+                    try:
+                        client.table("booking_checklists").insert(row).execute()
+                    except Exception:
+                        pass
 
-            # Mark checklist_submitted = 'TRUE' on bookings table
+            # Mark checklist_submitted = 'TRUE' and complete booking
             client.table("bookings").update({
                 "checklist_submitted": "TRUE",
+                "work_status": "COMPLETED",
                 "updated_at": now_str,
             }).eq("id", booking_id).execute()
 

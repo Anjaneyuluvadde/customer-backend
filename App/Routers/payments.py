@@ -275,6 +275,13 @@ async def verify_razorpay_payment(
         payment_plan = payload.payment_type or booking.get("payment_plan") or "FULL"
 
         # D. Update booking record
+        current_work_status = booking.get("work_status") or ""
+        # Only set to CONFIRMED on initial booking confirmation; preserve UNDER_REVIEW / IN_PROGRESS / COMPLETED
+        if current_work_status in ("PENDING", ""):
+            new_work_status = "CONFIRMED"
+        else:
+            new_work_status = current_work_status
+
         update_data = {
             "paid_amount": total_paid,
             "remaining_amount": remaining_amount,
@@ -285,7 +292,7 @@ async def verify_razorpay_payment(
             "razorpay_payment_id": payload.razorpay_payment_id,
             "razorpay_signature": payload.razorpay_signature,
             "payment_method": payment_method,
-            "work_status": "CONFIRMED",
+            "work_status": new_work_status,
         }
 
         client.table("bookings").update(update_data).eq("id", payload.booking_id).execute()
