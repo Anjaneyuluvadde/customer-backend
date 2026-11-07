@@ -64,7 +64,7 @@ class SubmitChecklistRequest(BaseModel):
 
 
 class SubmitReviewRequest(BaseModel):
-    rating: float
+    rating: float | int
     comment: str | None = None
 
 
@@ -425,10 +425,11 @@ async def get_booking_review(
                 client.table("reviews")
                 .select("*")
                 .eq("booking_id", booking_id)
-                .maybe_single()
+                .order("created_at", desc=True)
+                .limit(1)
                 .execute()
             )
-            return resp.data if resp else None
+            return resp.data[0] if (resp and resp.data and len(resp.data) > 0) else None
 
         rev = await run_in_threadpool(fetch_review)
         return {
@@ -454,23 +455,32 @@ async def submit_booking_review(
             client = get_supabase_client()
             target_id = resolve_customer_target_id(client, customer)
 
+            # Ensure rating is stored as a valid integer (1 to 5) for PostgreSQL integer column
+            try:
+                rating_int = int(round(float(payload.rating)))
+            except Exception:
+                rating_int = 5
+            rating_int = max(1, min(5, rating_int))
+
             # Check if review already exists
             existing = (
                 client.table("reviews")
                 .select("id")
                 .eq("booking_id", booking_id)
-                .maybe_single()
+                .order("created_at", desc=True)
+                .limit(1)
                 .execute()
             )
 
-            if existing and existing.data:
+            if existing and existing.data and len(existing.data) > 0:
+                review_id = existing.data[0]["id"]
                 resp = (
                     client.table("reviews")
                     .update({
-                        "rating": payload.rating,
+                        "rating": rating_int,
                         "comment": payload.comment or "",
                     })
-                    .eq("booking_id", booking_id)
+                    .eq("id", review_id)
                     .execute()
                 )
             else:
@@ -479,12 +489,16 @@ async def submit_booking_review(
                     .insert({
                         "booking_id": booking_id,
                         "user_id": target_id,
-                        "rating": payload.rating,
+                        "rating": rating_int,
                         "comment": payload.comment or "",
                     })
                     .execute()
                 )
-            return resp.data[0] if (resp and resp.data) else None
+
+            logger.info(
+                f"⭐ [REVIEW SUBMITTED] Booking: #{booking_id[:8]} | Rating: {rating_int}★ | User: {customer.phone or target_id}"
+            )
+            return resp.data[0] if (resp and resp.data and len(resp.data) > 0) else None
 
         saved = await run_in_threadpool(save_review)
         return {
@@ -494,6 +508,7 @@ async def submit_booking_review(
         }
 
     except Exception as e:
+        logger.error(f"❌ [REVIEW ERROR] Booking: #{booking_id[:8]} | Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to submit review: {str(e)}",
