@@ -1,7 +1,15 @@
+
 import logging
 from datetime import datetime, timezone
 from typing import Any
-from fastapi import APIRouter, Depends, HTTPException, status
+
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    status,
+)
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -10,7 +18,9 @@ from App.Dependencies.customer_auth import (
     get_current_customer,
     resolve_customer_target_id,
 )
+from App.Services.notifications import send_booking_cancellation_whatsapp
 from Supabase.client import get_supabase_client
+
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +29,10 @@ router = APIRouter(
     tags=["Customer Bookings"],
 )
 
+
+# ============================================================
+# REQUEST MODELS
+# ============================================================
 
 class CreateBookingRequest(BaseModel):
     customer_name: str
@@ -81,6 +95,10 @@ class UpdateBookingPaymentRequest(BaseModel):
     payment_type: str | None = None
 
 
+# ============================================================
+# CREATE BOOKING
+# ============================================================
+
 @router.post("/create")
 async def create_booking(
     payload: CreateBookingRequest,
@@ -91,16 +109,24 @@ async def create_booking(
             client = get_supabase_client()
             target_id = resolve_customer_target_id(client, customer)
 
-            # Auto-save / sync profile with name, phone, address
+            # Auto-save / sync profile
             try:
                 prof_data: dict[str, Any] = {
                     "full_name": payload.customer_name,
                     "phone": payload.phone_number,
                     "address": payload.full_address,
                 }
+
                 if payload.email:
                     prof_data["email"] = payload.email
-                client.table("profile").update(prof_data).eq("id", target_id).execute()
+
+                (
+                    client.table("profile")
+                    .update(prof_data)
+                    .eq("id", target_id)
+                    .execute()
+                )
+
             except Exception:
                 pass
 
@@ -123,88 +149,185 @@ async def create_booking(
                 "work_status": "PENDING",
                 "created_at": now_str,
                 "terms_accepted": payload.terms_accepted,
-                "terms_accepted_at": now_str if payload.terms_accepted else None,
+                "terms_accepted_at": (
+                    now_str if payload.terms_accepted else None
+                ),
             }
 
             if payload.email:
                 booking_dict["email"] = payload.email
+
             if payload.razorpay_order_id:
-                booking_dict["razorpay_order_id"] = payload.razorpay_order_id
+                booking_dict["razorpay_order_id"] = (
+                    payload.razorpay_order_id
+                )
+
             if payload.razorpay_payment_id:
-                booking_dict["razorpay_payment_id"] = payload.razorpay_payment_id
+                booking_dict["razorpay_payment_id"] = (
+                    payload.razorpay_payment_id
+                )
+
             if payload.razorpay_signature:
-                booking_dict["razorpay_signature"] = payload.razorpay_signature
+                booking_dict["razorpay_signature"] = (
+                    payload.razorpay_signature
+                )
+
             if payload.coupon_code:
                 booking_dict["coupon_code"] = payload.coupon_code
+
             if payload.coupon_discount_percentage is not None:
-                booking_dict["coupon_discount_percentage"] = payload.coupon_discount_percentage
+                booking_dict["coupon_discount_percentage"] = (
+                    payload.coupon_discount_percentage
+                )
+
             if payload.coupon_discount_amount is not None:
-                booking_dict["coupon_discount_amount"] = payload.coupon_discount_amount
+                booking_dict["coupon_discount_amount"] = (
+                    payload.coupon_discount_amount
+                )
+
             if payload.hub_name:
                 booking_dict["hub_name"] = payload.hub_name
+
             if payload.latitude is not None:
                 booking_dict["latitude"] = payload.latitude
+
             if payload.longitude is not None:
                 booking_dict["longitude"] = payload.longitude
-            if payload.promotional_banner_id:
-                booking_dict["promotional_banner_id"] = payload.promotional_banner_id
 
-            # Insert into bookings table
-            resp = client.table("bookings").insert(booking_dict).execute()
-            created = resp.data[0] if (resp and resp.data) else booking_dict
+            if payload.promotional_banner_id:
+                booking_dict["promotional_banner_id"] = (
+                    payload.promotional_banner_id
+                )
+
+            # Insert booking
+            resp = (
+                client.table("bookings")
+                .insert(booking_dict)
+                .execute()
+            )
+
+            created = (
+                resp.data[0]
+                if resp and resp.data
+                else booking_dict
+            )
+
             booking_uuid = created.get("id")
 
             # Handle wallet deduction
-            if payload.wallet_deduction and payload.wallet_deduction > 0 and booking_uuid:
+            if (
+                payload.wallet_deduction
+                and payload.wallet_deduction > 0
+                and booking_uuid
+            ):
                 try:
-                    w_resp = client.table("wallet").select("balance").eq("user_id", target_id).maybe_single().execute()
-                    current_bal = (w_resp.data.get("balance", 0) or 0) if (w_resp and w_resp.data) else 0
-                    new_bal = max(0.0, current_bal - payload.wallet_deduction)
-                    client.table("wallet").update({"balance": new_bal}).eq("user_id", target_id).execute()
+                    w_resp = (
+                        client.table("wallet")
+                        .select("balance")
+                        .eq("user_id", target_id)
+                        .maybe_single()
+                        .execute()
+                    )
 
-                    client.table("wallet_transactions").insert({
-                        "user_id": target_id,
-                        "amount": -abs(payload.wallet_deduction),
-                        "transaction_type": "booking_payment",
-                        "description": f"Discount applied to booking #{booking_uuid}",
-                    }).execute()
+                    current_bal = (
+                        w_resp.data.get("balance", 0) or 0
+                    ) if w_resp and w_resp.data else 0
+
+                    new_bal = max(
+                        0.0,
+                        current_bal - payload.wallet_deduction,
+                    )
+
+                    (
+                        client.table("wallet")
+                        .update({"balance": new_bal})
+                        .eq("user_id", target_id)
+                        .execute()
+                    )
+
+                    (
+                        client.table("wallet_transactions")
+                        .insert({
+                            "user_id": target_id,
+                            "amount": -abs(
+                                payload.wallet_deduction
+                            ),
+                            "transaction_type": "booking_payment",
+                            "description": (
+                                f"Discount applied to booking "
+                                f"#{booking_uuid}"
+                            ),
+                        })
+                        .execute()
+                    )
+
                 except Exception:
                     pass
 
-            # Mark coupon as used if manual coupon was used
+            # Mark coupon as used
             if payload.coupon_code:
                 try:
-                    client.table("coupons").update({"is_used": True}).ilike("coupon_code", payload.coupon_code.strip()).execute()
+                    (
+                        client.table("coupons")
+                        .update({"is_used": True})
+                        .ilike(
+                            "coupon_code",
+                            payload.coupon_code.strip(),
+                        )
+                        .execute()
+                    )
                 except Exception:
                     pass
 
-            # Clear cart for user
+            # Clear customer cart
             try:
-                client.table("cart_items").delete().in_("user_id", [customer.user_id, target_id]).execute()
+                (
+                    client.table("cart_items")
+                    .delete()
+                    .in_(
+                        "user_id",
+                        [customer.user_id, target_id],
+                    )
+                    .execute()
+                )
             except Exception:
                 pass
 
             return created
 
         booking = await run_in_threadpool(execute_create)
+
         booking_uuid = booking.get("id") or "UNKNOWN"
+
         logger.info(
             f"📦 [BOOKING CREATED] Booking: #{booking_uuid} | "
-            f"Customer: {payload.customer_name} ({payload.phone_number}) | "
-            f"Total: ₹{payload.total_amount} | Plan: {payload.payment_plan or 'FULL'}"
+            f"Customer: {payload.customer_name} "
+            f"({payload.phone_number}) | "
+            f"Total: ₹{payload.total_amount} | "
+            f"Plan: {payload.payment_plan or 'FULL'}"
         )
+
         return {
             "success": True,
             "data": booking,
         }
 
     except Exception as e:
-        logger.error(f"❌ [BOOKING CREATION FAILED] Customer: {payload.customer_name} | Error: {e}")
+        logger.error(
+            f"❌ [BOOKING CREATION FAILED] "
+            f"Customer: {payload.customer_name} | "
+            f"Error: {e}"
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to create booking: {str(e)}",
         )
 
+
+# ============================================================
+# GET BOOKING DETAILS
+# ============================================================
 
 @router.get("/{booking_id}")
 async def get_booking_details(
@@ -216,7 +339,6 @@ async def get_booking_details(
             client = get_supabase_client()
             target_id = resolve_customer_target_id(client, customer)
 
-            # Query booking by id
             resp = (
                 client.table("bookings")
                 .select("*")
@@ -224,28 +346,38 @@ async def get_booking_details(
                 .maybe_single()
                 .execute()
             )
+
             if not resp or not resp.data:
                 raise ValueError("Booking not found")
 
             booking = resp.data
 
-            # Fetch assigned staff details if staff is assigned
             staff_info = None
-            assigned_staff_id = booking.get("assigned_staff_id")
+            assigned_staff_id = booking.get(
+                "assigned_staff_id"
+            )
+
             if assigned_staff_id:
                 staff_resp = (
                     client.table("staff_profile")
-                    .select("id, name, phone, avatar_url, role, is_available")
+                    .select(
+                        "id, name, phone, avatar_url, "
+                        "role, is_available"
+                    )
                     .eq("id", assigned_staff_id)
                     .maybe_single()
                     .execute()
                 )
+
                 if staff_resp and staff_resp.data:
                     staff_info = staff_resp.data
 
             return booking, staff_info
 
-        b_data, s_info = await run_in_threadpool(fetch_detail)
+        b_data, s_info = await run_in_threadpool(
+            fetch_detail
+        )
+
         return {
             "success": True,
             "data": b_data,
@@ -255,49 +387,121 @@ async def get_booking_details(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unable to fetch booking details: {str(e)}",
+            detail=(
+                f"Unable to fetch booking details: {str(e)}"
+            ),
         )
 
+
+# ============================================================
+# CANCEL BOOKING
+# WHATSAPP CANCELLATION INTEGRATION
+# ============================================================
 
 @router.post("/{booking_id}/cancel")
 async def cancel_booking(
     booking_id: str,
     payload: CancelBookingRequest,
+    background_tasks: BackgroundTasks,
     customer: AuthenticatedCustomer = Depends(get_current_customer),
 ):
+    """
+    Cancel an eligible customer booking.
+
+    After successful cancellation:
+      - Existing Supabase push notification remains active.
+      - MSG91 WhatsApp cancellation is scheduled.
+      - Refund status remains PENDING.
+
+    Failed WhatsApp delivery does not undo cancellation.
+    """
+
     try:
         def do_cancel():
             client = get_supabase_client()
-            target_id = resolve_customer_target_id(client, customer)
 
-            # Check if staff is already assigned or booking cannot be cancelled
+            target_id = resolve_customer_target_id(
+                client,
+                customer,
+            )
+
+            allowed_user_ids = list({
+                customer.user_id,
+                target_id,
+            })
+
+            # ------------------------------------------------
+            # 1. FETCH CUSTOMER BOOKING
+            # ------------------------------------------------
+
             b_check = (
                 client.table("bookings")
-                .select("assigned_staff_id, assigned_staff_email, assigned_staff_name, work_status")
+                .select(
+                    "id, user_id, customer_name, phone_number, "
+                    "assigned_staff_id, assigned_staff_email, "
+                    "assigned_staff_name, work_status"
+                )
                 .eq("id", booking_id)
+                .in_("user_id", allowed_user_ids)
                 .maybe_single()
                 .execute()
             )
-            if b_check and b_check.data:
-                b_info = b_check.data
-                if (
-                    b_info.get("assigned_staff_id")
-                    or b_info.get("assigned_staff_email")
-                    or b_info.get("assigned_staff_name")
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Cannot cancel booking: A service partner has already been assigned to this booking.",
-                    )
-                if b_info.get("work_status") in ("COMPLETED", "CANCELLED", "UNDER_REVIEW"):
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Cannot cancel booking with status {b_info.get('work_status')}.",
-                    )
 
-            now_str = datetime.now(timezone.utc).isoformat()
+            if not b_check or not b_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Booking not found.",
+                )
 
-            # Update booking to cancelled
+            b_info = b_check.data
+
+            # ------------------------------------------------
+            # 2. CHECK SERVICE PARTNER ASSIGNMENT
+            # ------------------------------------------------
+
+            if (
+                b_info.get("assigned_staff_id")
+                or b_info.get("assigned_staff_email")
+                or b_info.get("assigned_staff_name")
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Cannot cancel booking: "
+                        "A service partner has already been "
+                        "assigned to this booking."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # 3. CHECK BOOKING STATUS
+            # ------------------------------------------------
+
+            current_status = str(
+                b_info.get("work_status") or ""
+            ).strip().upper()
+
+            if current_status in (
+                "COMPLETED",
+                "CANCELLED",
+                "UNDER_REVIEW",
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Cannot cancel booking with status "
+                        f"{current_status}."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # 4. PREPARE CANCELLATION DATA
+            # ------------------------------------------------
+
+            now_str = datetime.now(
+                timezone.utc
+            ).isoformat()
+
             update_data = {
                 "work_status": "CANCELLED",
                 "cancel_requested": True,
@@ -306,28 +510,134 @@ async def cancel_booking(
                 "refund_status": "PENDING",
             }
 
-            resp = (
+            # ------------------------------------------------
+            # 5. UPDATE BOOKING
+            # ------------------------------------------------
+            # Recheck assignment/status in the UPDATE itself.
+            # This reduces the chance of cancelling a booking
+            # that changed after the initial eligibility check.
+
+            update_query = (
                 client.table("bookings")
                 .update(update_data)
                 .eq("id", booking_id)
-                .in_("user_id", [customer.user_id, target_id])
-                .execute()
+                .in_("user_id", allowed_user_ids)
+                .is_("assigned_staff_id", "null")
+                .is_("assigned_staff_email", "null")
+                .is_("assigned_staff_name", "null")
             )
-            return resp.data[0] if (resp and resp.data) else update_data
+
+            previous_status = b_info.get("work_status")
+
+            if previous_status is None:
+                update_query = update_query.is_(
+                    "work_status",
+                    "null",
+                )
+            else:
+                update_query = update_query.eq(
+                    "work_status",
+                    previous_status,
+                )
+
+            resp = update_query.execute()
+
+            # ------------------------------------------------
+            # 6. CONFIRM CANCELLATION SUCCEEDED
+            # ------------------------------------------------
+
+            if not resp or not resp.data:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Booking cancellation could not be "
+                        "completed because its status or "
+                        "staff assignment changed. "
+                        "Please refresh and try again."
+                    ),
+                )
+
+            cancelled_booking = resp.data[0]
+
+            if (
+                str(
+                    cancelled_booking.get(
+                        "work_status"
+                    ) or ""
+                ).upper()
+                != "CANCELLED"
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                        "Booking cancellation was not "
+                        "confirmed by the database."
+                    ),
+                )
+
+            # Return the actual updated database row.
+            # This includes customer_name, phone_number,
+            # and id required by the MSG91 template.
+            return cancelled_booking
+
+        # ----------------------------------------------------
+        # 7. EXECUTE DATABASE CANCELLATION
+        # ----------------------------------------------------
 
         cancelled = await run_in_threadpool(do_cancel)
+
+        logger.info(
+            "✅ [BOOKING CANCELLED] "
+            "Booking: #%s | Customer: %s",
+            booking_id,
+            cancelled.get("customer_name", "Customer"),
+        )
+
+        # ----------------------------------------------------
+        # 8. SCHEDULE WHATSAPP CANCELLATION
+        # ----------------------------------------------------
+
+        background_tasks.add_task(
+            send_booking_cancellation_whatsapp,
+            cancelled,
+        )
+
+        logger.info(
+            "📲 [CANCELLATION WHATSAPP SCHEDULED] "
+            "Booking: #%s",
+            booking_id,
+        )
+
+        # ----------------------------------------------------
+        # 9. RETURN SUCCESS
+        # ----------------------------------------------------
+
         return {
             "success": True,
             "data": cancelled,
             "message": "Booking cancelled successfully",
         }
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Unable to cancel booking: {str(e)}",
+    except HTTPException:
+        # Preserve the correct 400/404/409 errors.
+        raise
+
+    except Exception:
+        logger.exception(
+            "❌ [BOOKING CANCELLATION FAILED] "
+            "Booking: #%s",
+            booking_id,
         )
 
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unable to cancel booking.",
+        )
+
+
+# ============================================================
+# GET BOOKING CHECKLIST
+# ============================================================
 
 @router.get("/{booking_id}/checklist")
 async def get_booking_checklist(
@@ -337,6 +647,7 @@ async def get_booking_checklist(
     try:
         def fetch_checklist():
             client = get_supabase_client()
+
             resp = (
                 client.table("booking_checklists")
                 .select("*")
@@ -344,9 +655,11 @@ async def get_booking_checklist(
                 .order("task_index", desc=False)
                 .execute()
             )
+
             return resp.data or []
 
         items = await run_in_threadpool(fetch_checklist)
+
         return {
             "success": True,
             "data": items,
@@ -359,6 +672,10 @@ async def get_booking_checklist(
         )
 
 
+# ============================================================
+# SUBMIT BOOKING CHECKLIST
+# ============================================================
+
 @router.post("/{booking_id}/checklist")
 async def submit_booking_checklist(
     booking_id: str,
@@ -368,9 +685,14 @@ async def submit_booking_checklist(
     try:
         def save_checklist():
             client = get_supabase_client()
-            target_id = resolve_customer_target_id(client, customer)
+            target_id = resolve_customer_target_id(
+                client,
+                customer,
+            )
 
-            now_str = datetime.now(timezone.utc).isoformat()
+            now_str = datetime.now(
+                timezone.utc
+            ).isoformat()
 
             for item in payload.items:
                 row = {
@@ -381,26 +703,43 @@ async def submit_booking_checklist(
                     "partner_verified": item.partner_verified,
                     "updated_at": now_str,
                 }
+
                 try:
-                    client.table("booking_checklists").upsert(
-                        row, on_conflict="booking_id,task_index"
-                    ).execute()
+                    (
+                        client.table("booking_checklists")
+                        .upsert(
+                            row,
+                            on_conflict="booking_id,task_index",
+                        )
+                        .execute()
+                    )
+
                 except Exception:
                     try:
-                        client.table("booking_checklists").insert(row).execute()
+                        (
+                            client.table("booking_checklists")
+                            .insert(row)
+                            .execute()
+                        )
                     except Exception:
                         pass
 
-            # Mark checklist_submitted = 'TRUE' and complete booking
-            client.table("bookings").update({
-                "checklist_submitted": "TRUE",
-                "work_status": "COMPLETED",
-                "updated_at": now_str,
-            }).eq("id", booking_id).execute()
+            # Mark checklist submitted and complete booking
+            (
+                client.table("bookings")
+                .update({
+                    "checklist_submitted": "TRUE",
+                    "work_status": "COMPLETED",
+                    "updated_at": now_str,
+                })
+                .eq("id", booking_id)
+                .execute()
+            )
 
             return True
 
         await run_in_threadpool(save_checklist)
+
         return {
             "success": True,
             "message": "Checklist submitted successfully",
@@ -413,6 +752,10 @@ async def submit_booking_checklist(
         )
 
 
+# ============================================================
+# GET BOOKING REVIEW
+# ============================================================
+
 @router.get("/{booking_id}/reviews")
 async def get_booking_review(
     booking_id: str,
@@ -421,6 +764,7 @@ async def get_booking_review(
     try:
         def fetch_review():
             client = get_supabase_client()
+
             resp = (
                 client.table("reviews")
                 .select("*")
@@ -429,9 +773,15 @@ async def get_booking_review(
                 .limit(1)
                 .execute()
             )
-            return resp.data[0] if (resp and resp.data and len(resp.data) > 0) else None
+
+            return (
+                resp.data[0]
+                if resp and resp.data and len(resp.data) > 0
+                else None
+            )
 
         rev = await run_in_threadpool(fetch_review)
+
         return {
             "success": True,
             "data": rev,
@@ -444,6 +794,10 @@ async def get_booking_review(
         )
 
 
+# ============================================================
+# SUBMIT BOOKING REVIEW
+# ============================================================
+
 @router.post("/{booking_id}/reviews")
 async def submit_booking_review(
     booking_id: str,
@@ -453,16 +807,24 @@ async def submit_booking_review(
     try:
         def save_review():
             client = get_supabase_client()
-            target_id = resolve_customer_target_id(client, customer)
+            target_id = resolve_customer_target_id(
+                client,
+                customer,
+            )
 
-            # Ensure rating is stored as a valid integer (1 to 5) for PostgreSQL integer column
             try:
-                rating_int = int(round(float(payload.rating)))
+                rating_int = int(
+                    round(float(payload.rating))
+                )
             except Exception:
                 rating_int = 5
-            rating_int = max(1, min(5, rating_int))
 
-            # Check if review already exists
+            rating_int = max(
+                1,
+                min(5, rating_int),
+            )
+
+            # Check existing review
             existing = (
                 client.table("reviews")
                 .select("id")
@@ -472,8 +834,13 @@ async def submit_booking_review(
                 .execute()
             )
 
-            if existing and existing.data and len(existing.data) > 0:
+            if (
+                existing
+                and existing.data
+                and len(existing.data) > 0
+            ):
                 review_id = existing.data[0]["id"]
+
                 resp = (
                     client.table("reviews")
                     .update({
@@ -483,6 +850,7 @@ async def submit_booking_review(
                     .eq("id", review_id)
                     .execute()
                 )
+
             else:
                 resp = (
                     client.table("reviews")
@@ -496,11 +864,20 @@ async def submit_booking_review(
                 )
 
             logger.info(
-                f"⭐ [REVIEW SUBMITTED] Booking: #{booking_id[:8]} | Rating: {rating_int}★ | User: {customer.phone or target_id}"
+                f"⭐ [REVIEW SUBMITTED] "
+                f"Booking: #{booking_id[:8]} | "
+                f"Rating: {rating_int}★ | "
+                f"User: {customer.phone or target_id}"
             )
-            return resp.data[0] if (resp and resp.data and len(resp.data) > 0) else None
+
+            return (
+                resp.data[0]
+                if resp and resp.data and len(resp.data) > 0
+                else None
+            )
 
         saved = await run_in_threadpool(save_review)
+
         return {
             "success": True,
             "data": saved,
@@ -508,12 +885,22 @@ async def submit_booking_review(
         }
 
     except Exception as e:
-        logger.error(f"❌ [REVIEW ERROR] Booking: #{booking_id[:8]} | Error: {str(e)}")
+        logger.error(
+            f"❌ [REVIEW ERROR] "
+            f"Booking: #{booking_id[:8]} | "
+            f"Error: {str(e)}"
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to submit review: {str(e)}",
         )
 
+
+# ============================================================
+# UPDATE BOOKING PAYMENT STATUS
+# EXISTING FUNCTIONALITY PRESERVED
+# ============================================================
 
 @router.post("/{booking_id}/payment-status")
 async def update_booking_payment_status(
@@ -524,7 +911,11 @@ async def update_booking_payment_status(
     try:
         def execute_update():
             client = get_supabase_client()
-            update_data = payload.model_dump(exclude_unset=True)
+
+            update_data = payload.model_dump(
+                exclude_unset=True
+            )
+
             if not update_data:
                 return {}
 
@@ -534,21 +925,41 @@ async def update_booking_payment_status(
                 .eq("id", booking_id)
                 .execute()
             )
-            return resp.data[0] if (resp and resp.data) else update_data
 
-        result = await run_in_threadpool(execute_update)
-
-        p_status = (payload.payment_status or "unknown").lower()
-        w_status = payload.work_status or "unknown"
-        if p_status in ("failed", "cancelled") or "FAIL" in w_status.upper() or "CANCEL" in w_status.upper():
-            logger.warning(
-                f"❌ [PAYMENT FAILED / CANCELLED] Booking: #{booking_id} | "
-                f"Status: {payload.payment_status or p_status} | WorkStatus: {w_status}"
+            return (
+                resp.data[0]
+                if resp and resp.data
+                else update_data
             )
+
+        result = await run_in_threadpool(
+            execute_update
+        )
+
+        p_status = (
+            payload.payment_status or "unknown"
+        ).lower()
+
+        w_status = payload.work_status or "unknown"
+
+        if (
+            p_status in ("failed", "cancelled")
+            or "FAIL" in w_status.upper()
+            or "CANCEL" in w_status.upper()
+        ):
+            logger.warning(
+                f"❌ [PAYMENT FAILED / CANCELLED] "
+                f"Booking: #{booking_id} | "
+                f"Status: {payload.payment_status or p_status} | "
+                f"WorkStatus: {w_status}"
+            )
+
         else:
             logger.info(
-                f"🔄 [PAYMENT STATUS UPDATED] Booking: #{booking_id} | "
-                f"Status: {payload.payment_status} | WorkStatus: {w_status}"
+                f"🔄 [PAYMENT STATUS UPDATED] "
+                f"Booking: #{booking_id} | "
+                f"Status: {payload.payment_status} | "
+                f"WorkStatus: {w_status}"
             )
 
         return {
@@ -556,10 +967,15 @@ async def update_booking_payment_status(
             "data": result,
             "message": "Payment status updated",
         }
+
     except Exception as e:
-        logger.error(f"❌ [PAYMENT STATUS UPDATE ERROR] Booking: #{booking_id} | Error: {e}")
+        logger.error(
+            f"❌ [PAYMENT STATUS UPDATE ERROR] "
+            f"Booking: #{booking_id} | "
+            f"Error: {e}"
+        )
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unable to update payment status: {str(e)}",
         )
-

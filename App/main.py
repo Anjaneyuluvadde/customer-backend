@@ -1,5 +1,7 @@
+
 import logging
 import sys
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -9,7 +11,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
+
 logger = logging.getLogger("neatify-customer-backend")
+
 from App.Routers.main_categories import router as main_categories_router
 from App.Routers.services import router as services_router
 from App.Routers.promotional_banners import router as promotional_banners_router
@@ -29,6 +33,10 @@ from App.Routers.coupons import router as coupons_router
 from App.Routers.bookings import router as bookings_router
 from App.Routers.payments import router as payments_router
 from App.Routers.auth import router as auth_router
+
+# Customer App Version Management
+from App.Routers.app_version import router as app_version_router
+
 
 app = FastAPI(
     title="Neatify Customer Backend",
@@ -61,6 +69,7 @@ async def health():
         "service": "neatify-customer-backend"
     }
 
+
 app.include_router(main_categories_router)
 app.include_router(addons_router)
 app.include_router(offers_router)
@@ -79,3 +88,6 @@ app.include_router(coupons_router)
 app.include_router(bookings_router)
 app.include_router(payments_router)
 app.include_router(auth_router)
+
+# Customer App Version Management
+app.include_router(app_version_router)
